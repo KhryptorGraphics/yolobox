@@ -10,8 +10,8 @@ permissions:
   packages: write
 
 jobs:
-  build-linux:
-    name: Build Linux Binaries
+  test:
+    name: Run Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +19,25 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+  build-linux:
+    name: Build Linux Binaries
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Build Linux binaries
         run: |
@@ -38,13 +56,14 @@ jobs:
   build-macos:
     name: Build and Sign macOS Binaries
     runs-on: macos-latest
+    needs: test
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
 
       - name: Build macOS binaries
         run: |
@@ -136,7 +155,7 @@ jobs:
   homebrew:
     name: Update Homebrew Formula
     runs-on: ubuntu-latest
-    needs: [release, docker]
+    needs: release
     steps:
       - name: Extract version
         id: version
