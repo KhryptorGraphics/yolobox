@@ -1100,9 +1100,9 @@ func findDockerSocket() (string, error) {
 
 	home, _ := os.UserHomeDir()
 	candidates := []string{
-		filepath.Join(home, ".docker", "run", "docker.sock"), // Docker Desktop macOS
-		filepath.Join(home, ".colima", "default", "docker.sock"), // Colima
-		"/var/run/docker.sock", // Linux default
+		"/var/run/docker.sock", // Standard path (works with Docker Desktop, Colima, Linux)
+		filepath.Join(home, ".docker", "run", "docker.sock"), // Docker Desktop macOS (alternative)
+		filepath.Join(home, ".colima", "default", "docker.sock"), // Colima (alternative)
 	}
 
 	for _, sock := range candidates {
