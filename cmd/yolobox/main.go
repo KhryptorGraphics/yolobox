@@ -1432,6 +1432,18 @@ func isAppleContainer(runtime string) bool {
 	return strings.HasSuffix(path, "/container")
 }
 
+// isRootlessPodman returns true when the resolved runtime is podman and the
+// current process is not running as root (i.e. rootless mode). Rootless Podman
+// uses a user namespace where the host UID maps to root inside the container,
+// which breaks bind-mount permissions for non-root container users.
+func isRootlessPodman(runtime string) bool {
+	path, err := resolveRuntime(runtime)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(path, "/podman") && os.Getuid() != 0
+}
+
 // prepareFileMountDir creates a temp directory with copies of files for Apple container
 // (which only supports directory mounts, not file mounts). Returns the temp dir path.
 // dirContainsSymlinks reports whether dir contains any symbolic links.
@@ -1668,7 +1680,17 @@ func buildRunArgs(cfg Config, projectDir string, command []string, interactive b
 	// Check if we're using Apple container (doesn't support file mounts)
 	appleContainer := isAppleContainer(cfg.Runtime)
 
+	// Check if we're using rootless Podman (needs --userns=keep-id for bind mount permissions)
+	rootlessPodman := isRootlessPodman(cfg.Runtime)
+
 	args := []string{"run", "--rm"}
+
+	// Rootless Podman: map the host user to container UID 1000 (yolo) so
+	// bind-mounted files are accessible. Without this, the host user maps to
+	// root inside the user namespace and the yolo user cannot write to mounts.
+	if rootlessPodman {
+		args = append(args, "--userns=keep-id:uid=1000,gid=1000")
+	}
 
 	// Add -it if explicitly interactive, or if stdin/stdout are both terminals
 	// This allows "yolobox run claude" to work interactively while still
@@ -1684,10 +1706,13 @@ func buildRunArgs(cfg Config, projectDir string, command []string, interactive b
 
 	// Pass host UID/GID so the entrypoint can match the yolo user to the
 	// project directory owner (fixes virtiofs permission issues on Colima 0.10+).
-	if info, err := os.Stat(absProject); err == nil {
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			args = append(args, "-e", fmt.Sprintf("YOLOBOX_HOST_UID=%d", stat.Uid))
-			args = append(args, "-e", fmt.Sprintf("YOLOBOX_HOST_GID=%d", stat.Gid))
+	// Skip for rootless Podman where --userns=keep-id handles UID mapping.
+	if !rootlessPodman {
+		if info, err := os.Stat(absProject); err == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				args = append(args, "-e", fmt.Sprintf("YOLOBOX_HOST_UID=%d", stat.Uid))
+				args = append(args, "-e", fmt.Sprintf("YOLOBOX_HOST_GID=%d", stat.Gid))
+			}
 		}
 	}
 
@@ -1737,10 +1762,18 @@ func buildRunArgs(cfg Config, projectDir string, command []string, interactive b
 	}
 	args = append(args, "-v", projectMount)
 
-	// Named volumes for persistence (skip if --scratch)
+	// Named volumes for persistence (skip if --scratch).
+	// Rootless Podman on SELinux-enabled hosts assigns per-container MCS
+	// labels; without :Z, files created in one run are inaccessible to the
+	// next. Docker silently ignores this suffix.
 	if !cfg.Scratch {
-		args = append(args, "-v", "yolobox-home:/home/yolo")
-		args = append(args, "-v", "yolobox-cache:/var/cache")
+		if rootlessPodman {
+			args = append(args, "-v", "yolobox-home:/home/yolo:Z")
+			args = append(args, "-v", "yolobox-cache:/var/cache:Z")
+		} else {
+			args = append(args, "-v", "yolobox-home:/home/yolo")
+			args = append(args, "-v", "yolobox-cache:/var/cache")
+		}
 	}
 
 	// For Apple container, we need to collect files and mount via a temp directory
